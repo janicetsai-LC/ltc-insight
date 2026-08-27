@@ -1,0 +1,16 @@
+{
+  "name": "ltc-insight-updater",
+  "version": "2.0.0",
+  "description": "LTC-Insight 自動更新管線：抓取桃園/台中/南投/臺東長照函釋，以央文號去重合併進 index.html",
+  "type": "module",
+  "scripts": {
+    "test": "node test-update-pipeline.mjs",
+    "update": "node update-all.mjs",
+    "update:dry": "node update-all.mjs --dry-run"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "cheerio": "^1.2.0"
+  }
+}
