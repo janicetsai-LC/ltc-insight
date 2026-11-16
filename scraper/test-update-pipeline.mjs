@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { extractCentralDoc, extractDate, extractCode, normalizeTitle, toRecord } from "./lib/extract.mjs";
-import { readIndexHtml, serializeRecords, mergeRecords } from "./lib/merge.mjs";
+import { readIndexHtml, serializeRecords, mergeRecords, ingestRaw } from "./lib/merge.mjs";
+import { parseDetail, scanIds } from "./fetchers/hualien.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const INDEX_PATH = path.join(__dirname, "..", "index.html");
@@ -176,6 +177,79 @@ console.log("（此情境現實中已不會由 toRecord 產生，這裡手動建
   check("citations陣列長度仍為1（同一筆引用升級連結，非新增第二筆）", existing[0].citations.length, 1);
   check("找到更好的PDF直連時應自動升級sourceUrl", existing[0].sourceUrl, "https://a.com/media/xxx.pdf");
   check("合併後總筆數仍為1（未產生重複卡片）", existing.length, 1);
+}
+
+console.log("\n=== ingestRaw：混有地方發文/雜訊時不得崩潰（排程曾因此連續失敗的回歸測試）===");
+{
+  const existing = [];
+  const raws = [
+    { agency: "桃園市政府社會局", agencyShort: "桃園", rawTitle: "本府社會局112年10月11日桃社老字第1120099795號函-洗腎跟車一案", url: "https://a.com/1.pdf" },
+    { agency: "臺中市政府衛生局", agencyShort: "台中", rawTitle: "活動資訊", url: "https://a.com/2" },
+    { agency: "南投縣政府衛生局", agencyShort: "南投", rawTitle: "衛生福利部115年9月1日衛部顧字第1150099999號函-測試函釋一案", url: "https://a.com/3.pdf" }
+  ];
+  let r;
+  try { r = ingestRaw(existing, raws, "T"); } catch (e) { r = { error: e.message }; }
+  check("不應拋出例外", r.error, undefined);
+  check("僅收錄1筆衛部顧字函釋", existing.length, 1);
+  check("略過2筆非中央函釋", r.skippedNotCentral, 2);
+  check("全部都不收錄時也不崩潰", ingestRaw([], [raws[0], raws[1]], "T").addedNew, 0);
+}
+
+console.log("\n=== ingestRaw：重複執行時 id 不得撞號 ===");
+{
+  const existing = [];
+  const mk = (n) => ({ agency: "南投縣政府衛生局", agencyShort: "南投", rawTitle: `衛生福利部115年9月1日衛部顧字第115009999${n}號函-測試${n}一案`, url: `https://a.com/${n}.pdf` });
+  ingestRaw(existing, [mk(1), mk(2)], "NT");
+  ingestRaw(existing, [mk(3), mk(4)], "NT"); // 模擬下一週的排程
+  const ids = existing.map((r) => r.id);
+  check("兩次執行共4筆", existing.length, 4);
+  check("id全站唯一", new Set(ids).size, 4);
+  check("第二次接續編號", ids.slice(2), ["NT-0003", "NT-0004"]);
+}
+
+console.log("\n=== 花蓮：內文頁解析（依 news/detail/1887 實際結構建構的測試頁）===");
+const hualienHtml = `<html><body>
+<h1>最新消息</h1>
+<ul><li><a href="/news/1">最新公告</a></li></ul>
+<h2>轉知衛福部有關函釋有關固定式斜坡道及非固定式斜坡板補助範圍一案(依據衛生福利部115年7月22日衛部顧字第1151962366號函辦理)</h2>
+<p>一、復貴府115年6月30日府社障字第1150174594號函。</p>
+<p>二、固定式斜坡道倘涉及占用公有地，則不宜納入補助範圍。</p>
+<p>(一)依據補助基準表之規定，居家無障礙改善公共空間不補助。</p>
+<ul><li><a href="/img/files/1150722衛部顧1151962366函釋.pdf">1150722衛部顧1151962366函釋.pdf</a></li></ul>
+<h4>長照專線1966</h4>
+</body></html>`;
+const parsed = parseDetail(hualienHtml, "https://long-term.hlshb.gov.tw/news/detail/1887");
+check("取得標題", parsed.title.includes("衛部顧字第1151962366號"), true);
+check("取得PDF附件網址", parsed.pdfUrl.includes("/img/files/") && parsed.pdfUrl.endsWith(".pdf"), true);
+check("取得條列內文（3段）", parsed.fullText.split("\n").length, 3);
+check("無h2的頁面視為未命中", parseDetail("<html><body><p>找不到頁面</p></body></html>", "x"), null);
+
+console.log("\n=== 花蓮：編號掃描（停止條件與進度記錄）===");
+{
+  const hits = new Set([1885, 1886, 1887, 1889]);
+  const calls = [];
+  const fakePage = async (n) => { calls.push(n); return hits.has(n) ? { title: `衛生福利部115年7月22日衛部顧字第11519628${n % 100}號函-測試${n}一案`, pdfUrl: null, detailUrl: `https://x/news/detail/${n}` } : null; };
+  const r = await scanIds({ startAfter: 1880, fetchPage: fakePage, delayMs: 0 });
+  check("掃到4篇", r.items.length, 4);
+  check("lastId為最大有效編號1889", r.lastId, 1889);
+  check("超過已知編號後連續查無資料即停止（不無限掃描）", calls.length < 200, true);
+  const r2 = await scanIds({ startAfter: 1889, fetchPage: async () => null, delayMs: 0 });
+  check("沒有新頁面時lastId維持不變", r2.lastId, 1889);
+  check("沒有新頁面時回傳0筆", r2.items.length, 0);
+}
+
+console.log("\n=== 花蓮 1887 號公告：用真實 index.html 走完整流程 ===");
+{
+  const { records } = await readIndexHtml(INDEX_PATH);
+  const before = records.length;
+  const hasAlready = records.some((r) => r.centralDocNumber === "衛部顧字第1151962366號");
+  const res = ingestRaw(records, [{ agency: "花蓮縣衛生局", agencyShort: "花蓮", rawTitle: parsed.title, url: parsed.pdfUrl, fullText: parsed.fullText }], "HL2");
+  const rec = records.find((r) => r.centralDocNumber === "衛部顧字第1151962366號");
+  check("成功收錄（或併入既有記錄）", !!rec, true);
+  check("新增獨立記錄或合併引用其一成立", hasAlready ? res.addedCitations + res.skippedDuplicateCitation >= 1 : records.length === before + 1, true);
+  check("title為純主旨且不含轉知", rec.title.includes("轉知") || rec.title.includes("衛福部有關函釋"), false);
+  check("citations含花蓮", rec.citations.some((c) => c.agencyShort === "花蓮"), true);
+  check("日期為央發文日期2026-07-22", rec.date, "2026-07-22");
 }
 
 console.log("\n=== 對實際 index.html 做唯讀讀寫回合測試 ===");
