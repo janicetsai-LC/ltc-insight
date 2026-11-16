@@ -1,7 +1,7 @@
 // scraper/lib/merge.mjs
 // 以 centralDocNumber 為主鍵的去重合併引擎，以及 index.html 的讀寫工具
 import { readFile, writeFile } from "node:fs/promises";
-import { extractCentralDoc } from "./extract.mjs";
+import { extractCentralDoc, toRecord } from "./extract.mjs";
 
 const DATA_START_MARKER = "const REAL_DATA_SOURCE = [";
 const DATA_END_MARKER_RE = /\n\];\n/;
@@ -92,6 +92,7 @@ export function mergeRecords(existingRecords, rawRecords) {
   const isPdf = (url) => /\.pdf($|\?)/i.test(url || "");
 
   for (const raw of rawRecords) {
+    if (!raw) continue; // 防呆：toRecord 對不收錄的項目會回傳 null
     const centralDocNumber = raw.centralDocNumber || extractCentralDoc(raw.docNumber) || extractCentralDoc(raw.title);
     const citation = raw.citations[0];
 
@@ -131,4 +132,29 @@ export function mergeRecords(existingRecords, rawRecords) {
   existingRecords.sort((a, b) => b.date.localeCompare(a.date));
 
   return { addedNew, addedCitations, skippedDuplicateCitation, upgradedSourceUrl, total: existingRecords.length };
+}
+
+/**
+ * 一站式處理：把某個來源抓到的原始項目，轉換 → 過濾 → 去重合併進 existingRecords。
+ * toRecord 回傳 null 的項目（非衛部顧字函釋、網站選單雜訊等）會被跳過並計數，不會中斷流程。
+ */
+export function ingestRaw(existingRecords, rawItems, idPrefix) {
+  // id 必須全站唯一（網頁用 id 找卡片開啟詳情）：流水號接在既有同前綴最大號之後，
+  // 避免每次排程重新從 1 開始編號而與舊記錄撞號
+  const idRe = new RegExp("^" + idPrefix + "-(\\d+)$");
+  let nextNo = existingRecords.reduce((mx, r) => {
+    const m = idRe.exec(r.id || "");
+    return m ? Math.max(mx, parseInt(m[1], 10)) : mx;
+  }, 0) + 1;
+  const kept = [];
+  for (const raw of rawItems) {
+    const rec = toRecord(raw, idPrefix, nextNo);
+    if (rec) {
+      kept.push(rec);
+      nextNo++;
+    }
+  }
+  const skippedNotCentral = rawItems.length - kept.length;
+  const result = mergeRecords(existingRecords, kept);
+  return { ...result, fetched: rawItems.length, skippedNotCentral };
 }
