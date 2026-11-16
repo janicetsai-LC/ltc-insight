@@ -12,6 +12,7 @@ permissions:
 jobs:
   update:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: 簽出 repository
         uses: actions/checkout@v4
@@ -32,7 +33,7 @@ jobs:
       - name: 檢查是否有資料異動
         id: check_diff
         run: |
-          if git diff --quiet index.html; then
+          if [ -z "$(git status --porcelain index.html scraper/state)" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -43,6 +44,6 @@ jobs:
         run: |
           git config user.name "ltc-insight-bot"
           git config user.email "actions@github.com"
-          git add index.html
+          git add index.html scraper/state
           git commit -m "自動更新：$(date '+%Y-%m-%d') 函釋資料同步"
           git push
