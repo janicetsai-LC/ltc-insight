@@ -11,12 +11,12 @@
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { toRecord } from "./lib/extract.mjs";
-import { readIndexHtml, writeIndexHtml, mergeRecords } from "./lib/merge.mjs";
+import { readIndexHtml, writeIndexHtml, ingestRaw } from "./lib/merge.mjs";
 import { fetchTaoyuan } from "./fetchers/taoyuan.mjs";
 import { fetchNantou } from "./fetchers/nantou.mjs";
 import { fetchTaitung } from "./fetchers/taitung.mjs";
 import { fetchTaichung } from "./fetchers/taichung.mjs";
+import { fetchHualien, commitHualienState } from "./fetchers/hualien.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const INDEX_PATH = path.join(__dirname, "..", "index.html");
@@ -25,7 +25,8 @@ const FETCHERS = {
   taoyuan: { label: "桃園", prefix: "TAOY2", fn: fetchTaoyuan },
   nantou: { label: "南投", prefix: "NTOU2", fn: fetchNantou },
   taitung: { label: "臺東", prefix: "TTUNG2", fn: fetchTaitung },
-  taichung: { label: "台中", prefix: "TC2", fn: fetchTaichung }
+  taichung: { label: "台中", prefix: "TC2", fn: fetchTaichung },
+  hualien: { label: "花蓮", prefix: "HL2", fn: fetchHualien, afterWrite: commitHualienState }
 };
 
 function parseArgs() {
@@ -49,6 +50,7 @@ async function main() {
   console.log(`  現有 ${existingRecords.length} 筆主記錄\n`);
 
   const summary = [];
+  const processed = [];
 
   for (const key of sources) {
     const fetcher = FETCHERS[key];
@@ -66,12 +68,12 @@ async function main() {
     }
     console.log(`  取得 ${rawItems.length} 筆原始項目`);
 
-    const newRecords = rawItems.map((raw, i) => toRecord(raw, fetcher.prefix, i + 1));
-    const result = mergeRecords(existingRecords, newRecords);
+    const result = ingestRaw(existingRecords, rawItems, fetcher.prefix);
     console.log(
-      `  → 新增獨立記錄 ${result.addedNew} 筆／合併為既有記錄的新引用 ${result.addedCitations} 筆／已存在略過 ${result.skippedDuplicateCitation} 筆\n`
+      `  → 非衛部顧字函釋略過 ${result.skippedNotCentral} 筆／新增獨立記錄 ${result.addedNew} 筆／合併為既有記錄的新引用 ${result.addedCitations} 筆／已存在略過 ${result.skippedDuplicateCitation} 筆\n`
     );
     summary.push({ source: fetcher.label, ...result });
+    processed.push(fetcher);
   }
 
   console.log("=== 總結 ===");
@@ -85,6 +87,7 @@ async function main() {
 
   console.log("\n寫回 index.html...");
   await writeIndexHtml(INDEX_PATH, existingRecords, htmlBefore, htmlAfter);
+  for (const f of processed) if (f.afterWrite) await f.afterWrite();
   console.log("完成。");
 }
 
