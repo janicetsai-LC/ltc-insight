@@ -99,8 +99,22 @@ export function isCentralCircular(centralDocNumber) {
  * 統一的標題清理管線：先去轉知字樣，再拆出主旨
  * 回傳 { identifier, subject }，subject 就是應該存進 title 欄位的乾淨主旨
  */
+// 文號放在標題「結尾括號」的格式（如花蓮縣：「…補助範圍一案(依據衛生福利部115年7月22日衛部顧字第1151962366號函辦理)」）
+const TAIL_ID_RE =
+  /[（(]\s*(?:依據|依)?\s*((?:衛生福利部|本部)?\s*\d{2,3}年\d{1,2}月\d{1,2}日\s*衛部顧字第[0-9A-Za-z]+號(?:函|令|書函)?)[^）)]*[）)]\s*$/;
+
+// 清掉轉知公告常見的開頭贅詞，如「衛福部有關函釋」
+function cleanSubjectNoise(text) {
+  return (text || "").replace(/^(?:衛福部|衛生福利部)(?:有關)?函釋[：:、\s]*/, "").trim();
+}
+
 export function normalizeTitle(rawTitle) {
   const noZhuanZhi = stripZhuanZhi(rawTitle);
+  const tail = noZhuanZhi.match(TAIL_ID_RE);
+  if (tail) {
+    const subject = cleanSubjectNoise(noZhuanZhi.slice(0, tail.index));
+    if (subject) return { identifier: tail[1].replace(/\s+/g, ""), subject };
+  }
   return splitDocAndSubject(noZhuanZhi);
 }
 
